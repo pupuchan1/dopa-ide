@@ -20,7 +20,7 @@ Claude Code を「ドパガキ仕様」にする mod です。Claude が働い�
 ターミナルで Claude Code を起動して、プロンプトに次の1行を入力します。
 
 ```
-/plugin install dopa-ide --marketplace <owner>/dopa-ide
+/plugin install dopa-ide --marketplace pupuchan1/dopa-ide
 ```
 
 マーケットプレイスを追加するか聞かれたら `y` を押し、インストール先のスコープを選びます。ユーザー全体（user）にすると、デスクトップアプリの Code タブでも動きます。
