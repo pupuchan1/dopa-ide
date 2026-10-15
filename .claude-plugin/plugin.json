@@ -1,0 +1,9 @@
+{
+  "name": "dopa-ide",
+  "version": "0.1.0",
+  "description": "A dopamine band above the prompt: blinking yellow with progress while Claude works, a rainbow Completed! when it's done, and the run log on hover",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Mayuka"
+  }
+}

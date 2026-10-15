@@ -1,0 +1,12 @@
+{
+  "name": "dopa-ide",
+  "owner": { "name": "Mayuka" },
+  "description": "Mods that make Claude Code flashier",
+  "plugins": [
+    {
+      "name": "dopa-ide",
+      "source": "./",
+      "description": "A dopamine band above the prompt: blinking yellow with progress while Claude works, a rainbow Completed! when it's done, and the run log on hover"
+    }
+  ]
+}
