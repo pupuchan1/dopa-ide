@@ -413,6 +413,77 @@ const WIN_PLAYER = [
   '}',
 ].join('\n')
 
+// Windows: a borderless, see-through, topmost window over the whole primary
+// screen for about two seconds: confetti falling, a frame cycling through the
+// rainbow, and a line of text in the middle. It never takes the focus, and it
+// makes no sound of its own (the fanfare is the sound).
+const OVERLAY_TEXT = 'Claude 返信きたよ！'
+const WIN_OVERLAY = String.raw`
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+
+$w = New-Object System.Windows.Window
+$w.WindowStyle = 'None'
+$w.AllowsTransparency = $true
+$w.Background = [System.Windows.Media.Brushes]::Transparent
+$w.Topmost = $true
+$w.ShowInTaskbar = $false
+$w.ShowActivated = $false
+$w.Left = 0; $w.Top = 0
+$sw = [System.Windows.SystemParameters]::PrimaryScreenWidth
+$sh = [System.Windows.SystemParameters]::PrimaryScreenHeight
+$w.Width = $sw; $w.Height = $sh
+
+$grid = New-Object System.Windows.Controls.Grid
+$border = New-Object System.Windows.Controls.Border
+$border.BorderThickness = 18
+$grid.Children.Add($border) | Out-Null
+$canvas = New-Object System.Windows.Controls.Canvas
+$grid.Children.Add($canvas) | Out-Null
+
+$label = New-Object System.Windows.Controls.TextBlock
+$label.Text = $env:DOPA_TEXT
+$label.FontSize = 64
+$label.FontWeight = 'Bold'
+$label.Foreground = [System.Windows.Media.Brushes]::White
+$label.HorizontalAlignment = 'Center'
+$label.VerticalAlignment = 'Center'
+$label.Effect = New-Object System.Windows.Media.Effects.DropShadowEffect
+$grid.Children.Add($label) | Out-Null
+$w.Content = $grid
+
+$colors = '#E24B4A','#EF9F27','#1D9E75','#378ADD','#7F77DD','#D4537E'
+$brushes = $colors | ForEach-Object { New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString($_)) }
+$rand = New-Object System.Random
+$confetti = @()
+for ($i = 0; $i -lt 120; $i++) {
+  $r = New-Object System.Windows.Shapes.Rectangle
+  $r.Width = 10; $r.Height = 16
+  $r.Fill = $brushes[$i % 6]
+  [System.Windows.Controls.Canvas]::SetLeft($r, $rand.NextDouble() * $sw)
+  [System.Windows.Controls.Canvas]::SetTop($r, -$rand.NextDouble() * $sh * 0.5)
+  $canvas.Children.Add($r) | Out-Null
+  $confetti += [pscustomobject]@{ R = $r; VY = 8 + $rand.NextDouble() * 10; VX = ($rand.NextDouble() - 0.5) * 6 }
+}
+
+$script:tick = 0
+$timer = New-Object System.Windows.Threading.DispatcherTimer
+$timer.Interval = [TimeSpan]::FromMilliseconds(30)
+$timer.Add_Tick({
+  $script:tick++
+  $border.BorderBrush = $brushes[[int]($script:tick / 4) % 6]
+  foreach ($p in $confetti) {
+    [System.Windows.Controls.Canvas]::SetTop($p.R, [System.Windows.Controls.Canvas]::GetTop($p.R) + $p.VY)
+    [System.Windows.Controls.Canvas]::SetLeft($p.R, [System.Windows.Controls.Canvas]::GetLeft($p.R) + $p.VX)
+  }
+  if ($script:tick -gt 50) { $w.Opacity = [Math]::Max(0, 1 - ($script:tick - 50) / 15) }
+  if ($script:tick -gt 65) { $timer.Stop(); $w.Close() }
+})
+$w.Add_ContentRendered({ $timer.Start() })
+$w.ShowDialog() | Out-Null
+`
+
 function utf16le(text: string): Uint8Array {
   const bytes = new Uint8Array(text.length * 2)
   for (let i = 0; i < text.length; i++) {
@@ -451,27 +522,49 @@ function soundFailed($: EngineInterface, err: unknown) {
   $.ui.toast(`🔇 音を鳴らせませんでした: ${cut(err instanceof Error ? err.message : String(err), 80)}`)
 }
 
-// Sound on or off, kept in the plugin's store across sessions; on until turned off.
+// Switches kept in the plugin's store across sessions; each is on until turned off.
 const SOUND_KEY = 'sound'
+const OVERLAY_KEY = 'overlay'
 
-async function isSoundOn($: EngineInterface): Promise<boolean> {
+async function isOn($: EngineInterface, key: string): Promise<boolean> {
   try {
-    return (await $.store.get(SOUND_KEY)) !== 'off'
+    return (await $.store.get(key)) !== 'off'
   } catch {
-    return true // a store that can't be read leaves the sound as it was made: on
+    return true // a store that can't be read leaves the switch as it was made: on
   }
 }
 
-// `/dopa-sound on`, `/dopa-sound off`, or bare `/dopa-sound` to flip it.
-async function setSound($: EngineInterface, args: string): Promise<string> {
+const isSoundOn = ($: EngineInterface) => isOn($, SOUND_KEY)
+
+// `/<command> on`, `/<command> off`, or bare `/<command>` to flip it.
+async function toggle(
+  $: EngineInterface,
+  key: string,
+  args: string,
+  say: { command: string; on: string; off: string },
+): Promise<string> {
   const word = args.trim().toLowerCase()
   if (word !== '' && word !== 'on' && word !== 'off') {
-    return '使い方: /dopa-sound on | off（何も付けなければ切り替え）'
+    return `使い方: /${say.command} on | off（何も付けなければ切り替え）`
   }
-  const isOn = word === '' ? !(await isSoundOn($)) : word === 'on'
-  await $.store.set(SOUND_KEY, isOn ? 'on' : 'off')
-  return isOn ? '🔊 dopa-ide の音を ON にしました' : '🔇 dopa-ide の音を OFF にしました（見た目の演出はそのまま）'
+  const isNowOn = word === '' ? !(await isOn($, key)) : word === 'on'
+  await $.store.set(key, isNowOn ? 'on' : 'off')
+  return isNowOn ? say.on : say.off
 }
+
+const setSound = ($: EngineInterface, args: string) =>
+  toggle($, SOUND_KEY, args, {
+    command: 'dopa-sound',
+    on: '🔊 dopa-ide の音を ON にしました',
+    off: '🔇 dopa-ide の音を OFF にしました（見た目の演出はそのまま）',
+  })
+
+const setOverlay = ($: EngineInterface, args: string) =>
+  toggle($, OVERLAY_KEY, args, {
+    command: 'dopa-overlay',
+    on: '🎊 完了時の全画面演出を ON にしました（Windows のみ）',
+    off: '🙈 完了時の全画面演出を OFF にしました（画面共有中などに）',
+  })
 
 // Built and played on a timer, so the hook that asks never waits for the synth.
 function playFanfare($: EngineInterface) {
@@ -479,6 +572,38 @@ function playFanfare($: EngineInterface) {
     if (!(await isSoundOn($))) return
     fanfare ??= wav(fanfareSamples(), FANFARE_GAIN)
     void playClip($, fanfare, 1, SAY).catch(err => soundFailed($, err))
+  })
+}
+
+let isOverlayWarned = false
+
+// The full-screen celebration, Windows only; off with /dopa-overlay off.
+function showOverlay($: EngineInterface) {
+  $.clock.after(0, async () => {
+    isWindows ??= (await $.env.get('OS')) === 'Windows_NT'
+    if (!isWindows || !(await isOn($, OVERLAY_KEY))) return
+    const argv = [
+      await powershellPath($),
+      '-NoProfile',
+      '-NonInteractive',
+      '-STA',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-WindowStyle',
+      'Hidden',
+      '-EncodedCommand',
+      base64(utf16le(WIN_OVERLAY)),
+    ]
+    void $.process
+      .run(argv, { env: { DOPA_TEXT: OVERLAY_TEXT }, timeoutMs: 20000 })
+      .then(ran => {
+        if (ran.exitCode !== 0) throw new Error(cut(ran.stderr || `exit ${ran.exitCode}`, 80))
+      })
+      .catch(err => {
+        if (isOverlayWarned) return
+        isOverlayWarned = true
+        $.ui.toast(`🎊 全画面演出を出せませんでした: ${cut(err instanceof Error ? err.message : String(err), 80)}`)
+      })
   })
 }
 
@@ -639,6 +764,10 @@ export const register: Register = on => {
       name: 'dopa-sound',
       description: 'dopa-ide の効果音と読み上げを ON / OFF する（on・off、なしで切り替え）',
     })
+    await $.command.register({
+      name: 'dopa-overlay',
+      description: '完了時の全画面の紙吹雪と虹色の枠を ON / OFF する（Windows、on・off、なしで切り替え）',
+    })
     return next(e)
   })
 
@@ -648,6 +777,8 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'dopa-sound' }, async ($, e) => ({ text: await setSound($, e.args) }))
+
+  on('command.run', { command: 'dopa-overlay' }, async ($, e) => ({ text: await setOverlay($, e.args) }))
 
   // A new main-loop turn: back to blinking yellow.
   on('turn.start', async ($, e, next) => {
@@ -746,6 +877,7 @@ export const register: Register = on => {
         void $.ui.notify('✅ 完了しました', { title: 'dopa-ide' }).catch(() => undefined)
         void $.ui.open({ id: FIREWORKS_PANE, title: '🎆 Completed!' }).catch(() => undefined)
         playFanfare($)
+        showOverlay($)
       }
     }
     return next(e)

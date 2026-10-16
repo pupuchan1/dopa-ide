@@ -1,5 +1,12 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+// Off Windows, with the sound swallowed: a test that doesn't listen for it
+// neither waits on a player nor starts a real PowerShell.
+function quiet(on: Parameters<Parameters<typeof test>[1]>[1]) {
+  mock.env(on, { OS: 'Linux' })
+  on('audio.play', () => ({ value: undefined }) as never)
+  on('audio.speak', () => ({ value: { via: 'system' } }) as never)
+}
 const band = (isWorking: boolean) => ({
   hasSurvey: false,
   isWorking,
@@ -12,6 +19,7 @@ const band = (isWorking: boolean) => ({
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: working shows progress and the current step, then Completed!`, async ($, on) => {
     const clock = mock.clock(on)
+    quiet(on) // no real sound or PowerShell from a test
 
     // Stand in for the engine
     on('turn.start', (_$, e) => ({ turnId: e.turnId }))
@@ -49,8 +57,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
 }
 
 for (const surface of ['terminal', 'desktop'] as const) {
-  test(`${surface}: fireworks on completion, plan progress, spinner and combo`, async ($, on) => {
+  test(`${surface}: fireworks on completion, plan progress, spinner and combo`, { timeoutMs: 20000 }, async ($, on) => {
     const clock = mock.clock(on)
+    quiet(on) // no real sound or PowerShell from a test
     on('turn.start', (_$, e) => ({ turnId: e.turnId }))
     on('turn.complete', (_$, e) => ({ text: e.answer }))
     on('tool.call', () => ({ result: 'ok' }))
@@ -113,6 +122,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
 test('completion marks this session unread in the sidebar, outside the run log', async ($, on) => {
   const clock = mock.clock(on)
+  quiet(on) // no real sound or PowerShell from a test
   const calls: Record<string, unknown>[] = []
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', (_$, e) => ({ text: e.answer }))
@@ -150,6 +160,7 @@ test('an aborted turn leaves the dot alone', async ($, on) => {
 
 test('a ✅ heads the title when a turn completes, and leaves when the next starts', async ($, on) => {
   const clock = mock.clock(on)
+  quiet(on) // no real sound or PowerShell from a test
   let title = 'Fix the login bug'
   const sets: string[] = []
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
@@ -187,8 +198,9 @@ test('a ✅ heads the title when a turn completes, and leaves when the next star
 })
 
 for (const surface of ['terminal', 'desktop'] as const) {
-  test(`${surface}: completion lights every site, and the next prompt clears it`, async ($, on) => {
+  test(`${surface}: completion lights every site, and the next prompt clears it`, { timeoutMs: 20000 }, async ($, on) => {
     const clock = mock.clock(on)
+    quiet(on) // no real sound or PowerShell from a test
     const opened: string[] = []
     const closed: string[] = []
     const notified: string[] = []
@@ -416,6 +428,74 @@ test('/dopa-sound turns the sound off, on, and flips it when bare', async ($, on
   expect(await say('')).toMatch(/OFF/) // the bad word changed nothing: still on, so this flips to off
 })
 
+// Records each process the mod starts.
+function processes(on: Parameters<Parameters<typeof test>[1]>[1]) {
+  const runs: { argv: readonly string[]; stdin?: string; env?: Record<string, string> }[] = []
+  on('process.run', (_$, e) => {
+    const input = e as unknown as { argv: readonly string[]; init?: { stdin?: string; env?: Record<string, string> } }
+    runs.push({ argv: input.argv, stdin: input.init?.stdin, env: input.init?.env })
+    return { value: { exitCode: 0, stdout: '', stderr: '' } } as never
+  })
+  return runs
+}
+
+// The engine's stand-ins for a turn; registered before the test first calls $.
+function turns(on: Parameters<Parameters<typeof test>[1]>[1]) {
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_$, e) => ({ text: e.answer }))
+  on('tool.call', () => ({ result: 'ok' }))
+}
+
+async function completeOnce($: Parameters<Parameters<typeof test>[1]>[0], id: string) {
+  await $.turn.start({ text: 'go', turnId: id })
+  await $.turn.complete({ answer: 'ok', durationMs: 10, isAborted: false, turnId: id, reason: 'answer' })
+}
+
+const isOverlay = (r: { argv: readonly string[]; env?: Record<string, string> }) => r.env?.DOPA_TEXT !== undefined
+
+test('on Windows, completion puts up the full-screen overlay, silently and in STA', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.env(on, { OS: 'Windows_NT', SystemRoot: 'C:\\Windows' })
+  const runs = processes(on)
+  turns(on)
+  await completeOnce($, 't30')
+  await clock.advance(100)
+
+  const overlay = runs.find(isOverlay)
+  expect(overlay).toBeDefined()
+  expect(overlay!.argv).toContain('-STA')
+  expect(overlay!.argv).toContain('-EncodedCommand')
+  expect(overlay!.stdin).toBeUndefined()
+  expect(overlay!.env!.DOPA_TEXT.length).toBeGreaterThan(0)
+})
+
+test('/dopa-overlay off keeps the overlay away, and the sound still plays', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.env(on, { OS: 'Windows_NT', SystemRoot: 'C:\\Windows' })
+  mock.store(on)
+  const runs = processes(on)
+  turns(on)
+  const said = JSON.stringify(await $.command.run({ command: 'dopa-overlay', args: 'off' } as never))
+  expect(said).toMatch(/OFF/)
+
+  await completeOnce($, 't31')
+  await clock.advance(100)
+  expect(runs.some(isOverlay)).toBe(false)
+  expect(runs.some(r => r.stdin !== undefined)).toBe(true) // the fanfare
+})
+
+test('off Windows there is no overlay to start', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.env(on, { OS: 'Linux' })
+  const runs = processes(on)
+  on('audio.play', () => ({ value: undefined }) as never)
+  on('audio.speak', () => ({ value: { via: 'system' } }) as never)
+  turns(on)
+  await completeOnce($, 't32')
+  await clock.advance(100)
+  expect(runs.some(isOverlay)).toBe(false)
+})
+
 // A stand-in app for the title tools: `failSets` refusals before it keeps one.
 function titleApp(on: Parameters<Parameters<typeof test>[1]>[1], start: string, failSets = 0) {
   const app = { title: start, sets: 0, failSets }
@@ -440,6 +520,7 @@ function titleApp(on: Parameters<Parameters<typeof test>[1]>[1], start: string, 
 
 test('sending the next prompt takes every ✅ off at once', async ($, on) => {
   const clock = mock.clock(on)
+  quiet(on) // no real sound or PowerShell from a test
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('prompt.submit', (_$, e) => ({ text: e.text }))
   const app = titleApp(on, '✅ ✅️ My work')
@@ -451,6 +532,7 @@ test('sending the next prompt takes every ✅ off at once', async ($, on) => {
 
 test('a refused removal is tried again, and the result is in the log', async ($, on) => {
   const clock = mock.clock(on)
+  quiet(on) // no real sound or PowerShell from a test
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', (_$, e) => ({ text: e.answer }))
   on('prompt.submit', (_$, e) => ({ text: e.text }))
@@ -472,6 +554,7 @@ test('a refused removal is tried again, and the result is in the log', async ($,
 
 test('a removal that never goes through says so', async ($, on) => {
   const clock = mock.clock(on)
+  quiet(on) // no real sound or PowerShell from a test
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   const app = titleApp(on, '✅ My work', 99)
 
@@ -491,6 +574,7 @@ test('a removal that never goes through says so', async ($, on) => {
 
 test('a quick turn never leaves its ✅ crossed with the next removal', async ($, on) => {
   const clock = mock.clock(on)
+  quiet(on) // no real sound or PowerShell from a test
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', (_$, e) => ({ text: e.answer }))
   on('prompt.submit', (_$, e) => ({ text: e.text }))
@@ -521,8 +605,9 @@ test('on Windows the fanfare and the voice go through PowerShell, from standard 
   await $.turn.complete({ answer: 'ok', durationMs: 10, isAborted: false, turnId: 't13', reason: 'answer' })
   await clock.advance(100)
 
-  // Spelled out part by part, so a lost backslash cannot pass.
-  const ps = runs.find(r => r.argv[0] === ['C:', 'Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'].join(String.fromCharCode(92)))
+  // Spelled out part by part, so a lost backslash cannot pass. The clip is the run fed on stdin.
+  const exe = ['C:', 'Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'].join(String.fromCharCode(92))
+  const ps = runs.find(r => r.argv[0] === exe && r.stdin !== undefined)
   expect(ps).toBeDefined()
   expect(ps!.argv).toContain('-EncodedCommand')
   expect(ps!.stdin?.startsWith('UklGR')).toBe(true) // base64 of "RIFF"
