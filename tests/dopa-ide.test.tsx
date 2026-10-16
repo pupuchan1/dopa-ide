@@ -370,6 +370,52 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 }
 
+test('with sound off, completion and combos stay silent but still celebrate', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.env(on, { OS: 'Linux' })
+  mock.store(on, { sound: 'off' })
+  const played: string[] = []
+  const toasts: string[] = []
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_$, e) => ({ text: e.answer }))
+  on('tool.call', () => ({ result: 'ok' }))
+  on('audio.play', () => {
+    played.push('play')
+    return { value: undefined } as never
+  })
+  on('audio.speak', () => {
+    played.push('speak')
+    return { value: { via: 'system' } } as never
+  })
+  on('ui.toast', (_$, e) => {
+    toasts.push(String((e as unknown as { text: string }).text))
+    return { value: undefined } as never
+  })
+
+  await $.turn.start({ text: 'go', turnId: 't20' })
+  for (let i = 0; i < 10; i++) await $.tool.call({ tool: 'Read', file_path: `/f${i}.md`, tool_use_id: `q${i}` })
+  await $.turn.complete({ answer: 'ok', durationMs: 10, isAborted: false, turnId: 't20', reason: 'answer' })
+  await clock.advance(200)
+
+  expect(played).toEqual([])
+  expect(toasts.some(t => t.includes('10 COMBO'))).toBe(true)
+  expect(toasts.some(t => t.includes('Completed'))).toBe(true)
+})
+
+test('/dopa-sound turns the sound off, on, and flips it when bare', async ($, on) => {
+  mock.store(on)
+  const say = async (args: string) =>
+    JSON.stringify(await $.command.run({ command: 'dopa-sound', args } as never))
+
+  // Each bare flip reads what the last call stored.
+  expect(await say('off')).toMatch(/OFF/)
+  expect(await say('')).toMatch(/ON/)
+  expect(await say('')).toMatch(/OFF/)
+  expect(await say('on')).toMatch(/ON/)
+  expect(await say('loud')).toMatch(/使い方/)
+  expect(await say('')).toMatch(/OFF/) // the bad word changed nothing: still on, so this flips to off
+})
+
 // A stand-in app for the title tools: `failSets` refusals before it keeps one.
 function titleApp(on: Parameters<Parameters<typeof test>[1]>[1], start: string, failSets = 0) {
   const app = { title: start, sets: 0, failSets }

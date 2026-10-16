@@ -451,16 +451,40 @@ function soundFailed($: EngineInterface, err: unknown) {
   $.ui.toast(`🔇 音を鳴らせませんでした: ${cut(err instanceof Error ? err.message : String(err), 80)}`)
 }
 
+// Sound on or off, kept in the plugin's store across sessions; on until turned off.
+const SOUND_KEY = 'sound'
+
+async function isSoundOn($: EngineInterface): Promise<boolean> {
+  try {
+    return (await $.store.get(SOUND_KEY)) !== 'off'
+  } catch {
+    return true // a store that can't be read leaves the sound as it was made: on
+  }
+}
+
+// `/dopa-sound on`, `/dopa-sound off`, or bare `/dopa-sound` to flip it.
+async function setSound($: EngineInterface, args: string): Promise<string> {
+  const word = args.trim().toLowerCase()
+  if (word !== '' && word !== 'on' && word !== 'off') {
+    return '使い方: /dopa-sound on | off（何も付けなければ切り替え）'
+  }
+  const isOn = word === '' ? !(await isSoundOn($)) : word === 'on'
+  await $.store.set(SOUND_KEY, isOn ? 'on' : 'off')
+  return isOn ? '🔊 dopa-ide の音を ON にしました' : '🔇 dopa-ide の音を OFF にしました（見た目の演出はそのまま）'
+}
+
 // Built and played on a timer, so the hook that asks never waits for the synth.
 function playFanfare($: EngineInterface) {
-  $.clock.after(0, () => {
+  $.clock.after(0, async () => {
+    if (!(await isSoundOn($))) return
     fanfare ??= wav(fanfareSamples(), FANFARE_GAIN)
     void playClip($, fanfare, 1, SAY).catch(err => soundFailed($, err))
   })
 }
 
 function playPip($: EngineInterface) {
-  $.clock.after(0, () => {
+  $.clock.after(0, async () => {
+    if (!(await isSoundOn($))) return
     pip ??= wav(pipSamples(), 1.5)
     void playClip($, pip, 0.6).catch(err => soundFailed($, err))
   })
@@ -611,6 +635,10 @@ export const register: Register = on => {
       name: 'dopa-log',
       description: 'このターンで実行したことと、今やっていることをペインで開く',
     })
+    await $.command.register({
+      name: 'dopa-sound',
+      description: 'dopa-ide の効果音と読み上げを ON / OFF する（on・off、なしで切り替え）',
+    })
     return next(e)
   })
 
@@ -618,6 +646,8 @@ export const register: Register = on => {
     await $.ui.open({ id: PANE, title: '🌈 dopa-ide log' })
     return { text: '実行履歴のペインを開きました。' }
   })
+
+  on('command.run', { command: 'dopa-sound' }, async ($, e) => ({ text: await setSound($, e.args) }))
 
   // A new main-loop turn: back to blinking yellow.
   on('turn.start', async ($, e, next) => {
